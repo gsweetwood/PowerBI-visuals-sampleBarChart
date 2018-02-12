@@ -162,6 +162,8 @@ module powerbi.extensibility.visual {
         constructor(options: VisualConstructorOptions) {
             this.host = options.host;
             this.selectionManager = options.host.createSelectionManager();
+            debugger;
+            this.selectionManager.registerOnSelectCallback((selection) => this.selectBars(selection));
             this.tooltipServiceWrapper = createTooltipServiceWrapper(this.host.tooltipService, options.element);
             let svg = this.svg = d3.select(options.element)
                 .append('svg')
@@ -230,7 +232,7 @@ module powerbi.extensibility.visual {
             this.xAxis.attr('transform', 'translate(0, ' + height + ')')
                 .call(xAxis);
 
-            let bars = this.barContainer.selectAll('.bar').data(viewModel.dataPoints);
+            let bars = this.barContainer.selectAll('.bar').data(this.barDataPoints);
             bars.enter()
                 .append('rect')
                 .classed('bar', true);
@@ -241,7 +243,8 @@ module powerbi.extensibility.visual {
                 y: d => yScale(<number>d.value),
                 x: d => xScale(d.category),
                 fill: d => d.color,
-                'fill-opacity': viewModel.settings.generalView.opacity / 100
+                'fill-opacity': viewModel.settings.generalView.opacity / 100,
+                d_selection_id: d => d.selectionId.toString()
             });
 
             this.tooltipServiceWrapper.addTooltip(this.barContainer.selectAll('.bar'),
@@ -251,20 +254,12 @@ module powerbi.extensibility.visual {
             let selectionManager = this.selectionManager;
             let allowInteractions = this.host.allowInteractions;
 
-            // This must be an anonymous function instead of a lambda because
-            // d3 uses 'this' as the reference to the element that was clicked.
-            bars.on('click', function(d) {
-				// Allow selection only if the visual is rendered in a view that supports interactivity (e.g. Report)
-                if (allowInteractions) {
-                    selectionManager.select(d.selectionId).then((ids: ISelectionId[]) => {
-                        bars.attr({
-                            'fill-opacity': ids.length > 0 ? BarChart.Config.transparentOpacity : BarChart.Config.solidOpacity
-                        });
+            this.selectBars(selectionManager.getSelectionIds() as visuals.ISelectionId[]);
 
-                        d3.select(this).attr({
-                            'fill-opacity': BarChart.Config.solidOpacity
-                        });
-                    });
+            bars.on('click', (d) => {
+                // Allow selection only if the visual is rendered in a view that supports interactivity (e.g. Report)
+                if (allowInteractions) {
+                    selectionManager.select(d.selectionId).then((ids: visuals.ISelectionId[]) => this.selectBars(ids));
 
                     (<Event>d3.event).stopPropagation();
                 }
@@ -272,6 +267,26 @@ module powerbi.extensibility.visual {
 
             bars.exit()
                .remove();
+        }
+
+        private selectBars(ids: visuals.ISelectionId[]) {
+            if (!this.host.allowInteractions) {
+                return;
+            }
+
+            let bars = this.barContainer.selectAll('.bar').data(this.barDataPoints);
+            if (ids.length > 0) { // select bars
+                bars.attr({
+                    'fill-opacity': (d) => {
+                        return ids.some((e) => (d.selectionId.equals(e)))?
+                        BarChart.Config.solidOpacity : BarChart.Config.transparentOpacity} 
+                });
+            }
+            else { // reset selection
+                bars.attr({
+                    'fill-opacity': BarChart.Config.solidOpacity
+                });
+            }
         }
 
         /**
