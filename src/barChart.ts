@@ -1,4 +1,7 @@
 module powerbi.extensibility.visual {
+    // powerbi.visuals
+    import ISelectionId = powerbi.visuals.ISelectionId;
+
     /**
      * Interface for BarCharts viewmodel.
      *
@@ -26,7 +29,7 @@ module powerbi.extensibility.visual {
         value: PrimitiveValue;
         category: string;
         color: string;
-        selectionId: powerbi.visuals.ISelectionId;
+        selectionId: ISelectionId;
     };
 
     /**
@@ -79,8 +82,10 @@ module powerbi.extensibility.visual {
             || !dataViews[0].categorical
             || !dataViews[0].categorical.categories
             || !dataViews[0].categorical.categories[0].source
-            || !dataViews[0].categorical.values)
+            || !dataViews[0].categorical.values
+        ) {
             return viewModel;
+        }
 
         let categorical = dataViews[0].categorical;
         let category = categorical.categories[0];
@@ -138,6 +143,8 @@ module powerbi.extensibility.visual {
         private locale: string;
         private helpLinkElement: Element;
 
+        private barSelection: d3.selection.Update<BarChartDataPoint>;
+
         static Config = {
             xScalePadding: 0.1,
             solidOpacity: 1,
@@ -162,19 +169,24 @@ module powerbi.extensibility.visual {
         constructor(options: VisualConstructorOptions) {
             this.host = options.host;
             this.selectionManager = options.host.createSelectionManager();
-            debugger;
-            this.selectionManager.registerOnSelectCallback((selection) => this.selectBars(selection));
             this.tooltipServiceWrapper = createTooltipServiceWrapper(this.host.tooltipService, options.element);
-            let svg = this.svg = d3.select(options.element)
+
+            (this.selectionManager as any).registerOnSelectCallback(() => {
+                this.syncSelectionState(this.barSelection, this.selectionManager.getSelectionIds() as ISelectionId[]);
+            });
+
+            this.svg = d3.select(options.element)
                 .append('svg')
                 .classed('barChart', true);
 
             this.locale = options.host.locale;
 
-            this.barContainer = svg.append('g')
+            this.barContainer = this.svg
+                .append('g')
                 .classed('barContainer', true);
 
-            this.xAxis = svg.append('g')
+            this.xAxis = this.svg
+                .append('g')
                 .classed('xAxis', true);
 
             this.helpLinkElement = this.createHelpLinkElement();
@@ -232,61 +244,91 @@ module powerbi.extensibility.visual {
             this.xAxis.attr('transform', 'translate(0, ' + height + ')')
                 .call(xAxis);
 
-            let bars = this.barContainer.selectAll('.bar').data(this.barDataPoints);
-            bars.enter()
+            this.barSelection = this.barContainer
+                .selectAll('.bar')
+                .data(this.barDataPoints);
+
+            this.barSelection
+                .enter()
                 .append('rect')
                 .classed('bar', true);
 
-            bars.attr({
-                width: xScale.rangeBand(),
-                height: d => height - yScale(<number>d.value),
-                y: d => yScale(<number>d.value),
-                x: d => xScale(d.category),
-                fill: d => d.color,
-                'fill-opacity': viewModel.settings.generalView.opacity / 100,
-                d_selection_id: d => d.selectionId.toString()
-            });
+            this.barSelection
+                .attr({
+                    width: xScale.rangeBand(),
+                    height: d => height - yScale(<number>d.value),
+                    y: d => yScale(<number>d.value),
+                    x: d => xScale(d.category),
+                    fill: d => d.color,
+                })
+                .style('fill-opacity', viewModel.settings.generalView.opacity / 100);
 
             this.tooltipServiceWrapper.addTooltip(this.barContainer.selectAll('.bar'),
                 (tooltipEvent: TooltipEventArgs<number>) => this.getTooltipData(tooltipEvent.data),
-                (tooltipEvent: TooltipEventArgs<number>) => null);
+                (tooltipEvent: TooltipEventArgs<number>) => null
+            );
 
-            let selectionManager = this.selectionManager;
-            let allowInteractions = this.host.allowInteractions;
+            this.syncSelectionState(
+                this.barSelection,
+                this.selectionManager.getSelectionIds() as ISelectionId[]
+            );
 
-            this.selectBars(selectionManager.getSelectionIds() as visuals.ISelectionId[]);
-
-            bars.on('click', (d) => {
+            this.barSelection.on('click', (d) => {
                 // Allow selection only if the visual is rendered in a view that supports interactivity (e.g. Report)
-                if (allowInteractions) {
-                    selectionManager.select(d.selectionId).then((ids: visuals.ISelectionId[]) => this.selectBars(ids));
+                if (this.host.allowInteractions) {
+                    const isCrtlPressed: boolean = (d3.event as MouseEvent).ctrlKey;
+
+                    this.selectionManager
+                        .select(d.selectionId, isCrtlPressed)
+                        .then((ids: ISelectionId[]) => {
+                            this.syncSelectionState(this.barSelection, ids);
+                        });
 
                     (<Event>d3.event).stopPropagation();
                 }
             });
 
-            bars.exit()
-               .remove();
+            this.barSelection
+                .exit()
+                .remove();
         }
 
-        private selectBars(ids: visuals.ISelectionId[]) {
-            if (!this.host.allowInteractions) {
+        private syncSelectionState(
+            selection: d3.Selection<BarChartDataPoint>,
+            selectionIds: ISelectionId[]
+        ): void {
+            if (!selection || !selectionIds) {
                 return;
             }
 
-            let bars = this.barContainer.selectAll('.bar').data(this.barDataPoints);
-            if (ids.length > 0) { // select bars
-                bars.attr({
-                    'fill-opacity': (d) => {
-                        return ids.some((e) => (d.selectionId.equals(e)))?
-                        BarChart.Config.solidOpacity : BarChart.Config.transparentOpacity} 
-                });
+            if (!selectionIds.length) {
+                selection.style("fill-opacity", null);
+
+                return;
             }
-            else { // reset selection
-                bars.attr({
-                    'fill-opacity': BarChart.Config.solidOpacity
-                });
+
+            const self: this = this;
+
+            selection.each(function (barDataPoint: BarChartDataPoint) {
+                const isSelected: boolean = self.isSelectionIdInArray(selectionIds, barDataPoint.selectionId);
+
+                d3.select(this).style(
+                    "fill-opacity",
+                    isSelected
+                        ? BarChart.Config.solidOpacity
+                        : BarChart.Config.transparentOpacity
+                );
+            });
+        }
+
+        private isSelectionIdInArray(selectionIds: ISelectionId[], selectionId: ISelectionId): boolean {
+            if (!selectionIds || !selectionId) {
+                return false;
             }
+
+            return selectionIds.some((currentSelectionId: ISelectionId) => {
+                return currentSelectionId.includes(selectionId);
+            });
         }
 
         /**
