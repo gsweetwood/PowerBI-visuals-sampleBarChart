@@ -251,15 +251,15 @@ module powerbi.extensibility.visual {
 
             this.barSelection
                 .enter()
-                .append('rect')
+                .append('circle')
                 .classed('bar', true);
 
             this.barSelection
                 .attr({
                     width: xScale.rangeBand(),
-                    height: d => height - yScale(<number>d.value),
-                    y: d => yScale(<number>d.value),
-                    x: d => xScale(d.category),
+                    r: d => (height - yScale(<number>d.value))*0.3,
+                    cy: d => (height + yScale(<number>d.value))*0.3,//yScale(<number>d.value),
+                    cx: d => width * 0.5, //xScale(d.category),
                     fill: d => d.color,
                 })
                 .style('fill-opacity', viewModel.settings.generalView.opacity / 100);
